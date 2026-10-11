@@ -11,7 +11,7 @@
 
 import tarfile
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from ..db.local_db import LocalDB
 from ..db.models import Package
@@ -27,6 +27,10 @@ def get_package_file_list(archive_path: str) -> list[str]:
     try:
         with tarfile.open(archive_path, "r:*") as tar:
             for member in tar.getmembers():
+                # Directories are shared by design (usr/include/foo, usr/lib,
+                # ...). Like pacman, never treat them as file conflicts.
+                if member.isdir():
+                    continue
                 name = member.name
                 # Skip metadata files
                 if name.startswith("."):
@@ -40,11 +44,31 @@ def get_package_file_list(archive_path: str) -> list[str]:
     return files
 
 
+# Arch splits some monolithic upstream packages into several. On an LFS
+# system the monolith is what got adopted into the local DB, so the split
+# package legitimately overlaps with it. Map: split package -> parent.
+SPLIT_PACKAGE_PARENTS = {
+    "util-linux-libs": "util-linux",
+    "systemd-libs": "systemd",
+    "gcc-libs": "gcc",
+}
+
+
+def is_split_sibling(owner: str, new_pkg: str) -> bool:
+    """True if *new_pkg* is an Arch split-out piece of *owner*."""
+    if SPLIT_PACKAGE_PARENTS.get(new_pkg) == owner:
+        return True
+    return new_pkg == f"{owner}-libs"
+
+
 def check_file_conflicts(
     pkg: Package,
     archive_path: str,
     local_db: LocalDB,
     force: bool = False,
+    allow_split_takeover: bool = False,
+    protected_packages: Iterable[str] = (),
+    force_protected: bool = False,
 ) -> list[dict]:
     """
     Check if any file in the package archive conflicts with
@@ -55,12 +79,19 @@ def check_file_conflicts(
         archive_path: Path to the .pkg.tar.zst file
         local_db: The local installed package database
         force: If True, report conflicts but don't raise
+        allow_split_takeover: If True, files owned by the monolithic parent
+            of an Arch split package (e.g. util-linux -> util-linux-libs)
+            are not errors; they are returned flagged ``takeover=True`` so
+            the caller can move ownership to the new package.
+        protected_packages / force_protected: a takeover from a protected
+            package additionally requires ``force_protected``.
 
     Returns:
-        List of conflict dicts: [{file, owner, new_pkg}, ...]
+        List of conflict dicts: [{file, owner, new_pkg, takeover}, ...]
 
     Raises:
-        FileConflictError if conflicts are found and force=False
+        FileConflictError if non-takeover conflicts are found and force=False.
+        The error carries the first conflict and a ``total`` count.
     """
     new_files = get_package_file_list(archive_path)
     if not new_files:
@@ -75,25 +106,33 @@ def check_file_conflicts(
         for f in local_db.get_files(other_pkg.name):
             ctx.add(f, other_pkg.name)
 
+    protected = set(protected_packages)
     conflicts = []
-    res = ctx.check(new_files, pkg.name)
-    if res:
-        if not force:
-            conflicting_file, owner = res
-            raise FileConflictError(
-                filename=conflicting_file,
-                owner_pkg=owner,
-                new_pkg=pkg.name,
-            )
-        else:
-            for filepath in new_files:
-                owner = ctx.owner(filepath)
-                if owner and owner != pkg.name:
-                    conflicts.append({
-                        "file": filepath,
-                        "owner": owner,
-                        "new_pkg": pkg.name,
-                    })
+    for filepath in new_files:
+        owner = ctx.owner(filepath)
+        if not owner or owner == pkg.name:
+            continue
+        takeover = (
+            allow_split_takeover
+            and is_split_sibling(owner, pkg.name)
+            and (owner not in protected or force_protected)
+        )
+        conflicts.append({
+            "file": filepath,
+            "owner": owner,
+            "new_pkg": pkg.name,
+            "takeover": takeover,
+        })
+
+    blocking = [c for c in conflicts if not c["takeover"]]
+    if blocking and not force:
+        first = blocking[0]
+        raise FileConflictError(
+            filename=first["file"],
+            owner_pkg=first["owner"],
+            new_pkg=first["new_pkg"],
+            total=len(blocking),
+        )
 
     return conflicts
 

@@ -463,13 +463,30 @@ class InstallTransaction(Transaction):
         # File-level conflicts
         if self.verbose:
             print_step("Checking file-level conflicts...")
+        takeovers: dict[tuple[str, str], set[str]] = {}
         for pkg in filtered_pkgs:
             archive = merged_paths.get(pkg.name)
             if archive:
                 if self.verbose:
                     print(f"   • Checking {pkg.filename}...")
-                check_file_conflicts(pkg, archive, self.local_db, force=False)
-        if self.verbose:
+                found = check_file_conflicts(
+                    pkg, archive, self.local_db, force=False,
+                    allow_split_takeover=True,
+                    protected_packages=self.config.protected_packages,
+                    force_protected=force_protected,
+                )
+                for c in found:
+                    if c.get("takeover"):
+                        takeovers.setdefault(
+                            (c["owner"], c["new_pkg"]), set()
+                        ).add(c["file"])
+        if takeovers:
+            for (owner, new_pkg), files in takeovers.items():
+                print_info(
+                    f"{new_pkg} is a split of installed '{owner}': "
+                    f"taking over {len(files)} file(s)"
+                )
+        elif self.verbose:
             print_success("No file conflicts detected")
                 
         # Library Checks & ABI compatibility
@@ -533,6 +550,11 @@ class InstallTransaction(Transaction):
             # Post hooks
             hr.run_phase("post_install", pkg.version)
 
+        # Split-package takeovers: the old owner no longer owns those files
+        # (so removing it later won't delete files the new package needs).
+        for (owner, _new_pkg), files in takeovers.items():
+            if self.local_db.has(owner):
+                self.local_db.disown_files(owner, files)
 
         print()
         print_section("Install · 6/6 · Global hooks")

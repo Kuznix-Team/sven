@@ -273,6 +273,23 @@ class LocalDB:
         with open(files_path) as f:
             return [line.strip() for line in f if line.strip()]
 
+    def disown_files(self, name: str, files) -> int:
+        """
+        Drop *files* from package *name*'s file list (ownership moved to
+        another package). Returns how many entries were removed.
+        """
+        pkg = self.get(name)
+        if not pkg:
+            raise PackageNotInstalledError(name)
+        drop = {f.lstrip("/") for f in files}
+        current = self.get_files(name)
+        kept = [f for f in current if f.lstrip("/") not in drop]
+        removed = len(current) - len(kept)
+        if removed:
+            files_path = self.db_path / pkg.full_name / "files"
+            self._atomic_write(files_path, "\n".join(kept))
+        return removed
+
     def package_count(self) -> int:
         return len(self._cache)
 

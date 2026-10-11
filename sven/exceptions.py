@@ -273,13 +273,15 @@ class MigrationError(SvenError):
 
 class FileConflictError(SvenError):
     """A file is already owned by another package."""
-    def __init__(self, filename: str, owner_pkg: str, new_pkg: str):
+    def __init__(self, filename: str, owner_pkg: str, new_pkg: str, total: int = 1):
         self.filename  = filename
         self.owner_pkg = owner_pkg
         self.new_pkg   = new_pkg
+        self.total     = total
+        more = f" (+{total - 1} more conflicting file(s))" if total > 1 else ""
         super().__init__(
             f"File conflict: {filename} is owned by '{owner_pkg}', "
-            f"cannot be overwritten by '{new_pkg}'"
+            f"cannot be overwritten by '{new_pkg}'{more}"
         )
 
 class SystemdDependencyError(SvenError):
