@@ -1,6 +1,6 @@
 # Maintainer: HANS TECH <open-source@hanstech.dev>
 pkgname=sven-bin
-pkgver=2.1.1
+pkgver=2.1.2
 pkgrel=1
 pkgdesc="Sven Package Manager for Seven OS (LFS) - PyInstaller Binary"
 arch=('x86_64')

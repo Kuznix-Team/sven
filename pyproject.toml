@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "sven"
-version = "2.1.1"
+version = "2.1.2"
 description = "The package manager for Seven OS — powered by Arch repos, built for freedom."
 readme = "README.md"
 license = { file = "LICENSE" }
