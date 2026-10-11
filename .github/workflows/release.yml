@@ -1,34 +1,51 @@
 name: Release
 
-# Push a tag like v2.1.2 (or `make release VERSION=2.1.2`) to build and publish.
-# Re-run for an existing tag from the Actions tab (workflow_dispatch).
+# Releases happen automatically when VERSION in sven/constants.py is bumped on main
+# (the tag is created for you), or when you push a tag like v2.1.2 by hand
+# (`make release VERSION=2.1.2`). To (re)run one manually: Actions -> Release -> Run workflow.
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths: ['sven/constants.py']   # paths are ignored for tag pushes
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build and release, e.g. v2.1.2'
-        required: true
+        description: 'Tag to release, e.g. v2.1.2 (default: v<VERSION from constants.py>)'
+        required: false
 
 permissions:
   contents: read
 
+# one release at a time; never cancel one that is half-published
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
-env:
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 jobs:
-  test:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: scripts/release_plan.sh
+
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -51,14 +68,16 @@ jobs:
           python -m pytest -q
 
   build:
-    needs: test
+    needs: [prepare, test]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     # Build on an older glibc than ubuntu-latest so the binary runs on more systems.
     container: python:3.11-bookworm
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Install build dependencies
         run: pip install requests zstandard python-gnupg pyinstaller
@@ -81,10 +100,12 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -95,6 +116,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          target_commitish: ${{ needs.prepare.outputs.ref }}   # creates the tag here if it does not exist yet
           generate_release_notes: true
           prerelease: ${{ contains(env.TAG, '-') }}
           files: |
@@ -103,9 +125,10 @@ jobs:
 
   aur:
     # Optional: only runs when the AUR_SSH_PRIVATE_KEY secret is configured.
-    needs: release
+    needs: [prepare, release]
     runs-on: ubuntu-latest
     env:
+      TAG: ${{ needs.prepare.outputs.tag }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     steps:
       - name: Check for AUR credentials
@@ -117,7 +140,7 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.gate.outputs.enabled == 'true'
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/download-artifact@v4
         if: steps.gate.outputs.enabled == 'true'
