@@ -30,7 +30,7 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       ref: ${{ steps.plan.outputs.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: plan
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -43,7 +43,7 @@ jobs:
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -75,7 +75,7 @@ jobs:
     # Build on an older glibc than ubuntu-latest so the binary runs on more systems.
     container: python:3.11-bookworm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -137,7 +137,7 @@ jobs:
           if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
           else echo "AUR_SSH_PRIVATE_KEY not set; skipping AUR publish"; fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.enabled == 'true'
         with:
           ref: ${{ needs.prepare.outputs.ref }}
