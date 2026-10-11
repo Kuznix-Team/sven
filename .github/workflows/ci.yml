@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install requests zstandard python-gnupg pytest
+
+      - name: Syntax check
+        run: python -m compileall -q sven
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  build:
+    name: Build binary (smoke test)
+    runs-on: ubuntu-latest
+    needs: test
+    container: python:3.11-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: pip install requests zstandard python-gnupg pyinstaller
+
+      - name: Build
+        run: make build
+
+      - name: Smoke test
+        run: |
+          file dist/sven
+          ./dist/sven --help

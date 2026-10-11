@@ -1,6 +1,6 @@
 # Maintainer: HANS TECH <open-source@hanstech.dev>
 pkgname=sven-bin
-pkgver=1.1.0
+pkgver=2.1.1
 pkgrel=1
 pkgdesc="Sven Package Manager for Seven OS (LFS) - PyInstaller Binary"
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('GPL3')
 depends=('git' 'gnupg' 'curl' 'tar' 'zstd')
 provides=('sven')
 conflicts=('sven' 'sven-git')
-source=("sven-x86_64-linux::https://github.com/haroldmth/sven/releases/download/v${pkgver}/sven-x86_64-linux"
+source=("sven-x86_64-linux::https://github.com/haroldmth/sven/releases/download/v${pkgver}/sven-linux-x86_64"
         "sven-lock-check.hook"
         "check-sven-lock.sh"
         "sven-aur-upgrade-block.hook"

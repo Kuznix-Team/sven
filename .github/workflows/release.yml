@@ -1,68 +1,148 @@
 name: Release
 
+# Push a tag like v2.1.2 (or `make release VERSION=2.1.2`) to build and publish.
+# Re-run for an existing tag from the Actions tab (workflow_dispatch).
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build and release, e.g. v2.1.2'
+        required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  build-and-release:
+  test:
     runs-on: ubuntu-latest
-    env:
-      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install build dependencies
+      - name: Tag must match the version in the source
         run: |
-          pip install requests zstandard python-gnupg pyinstaller
+          WANT="${TAG#v}"
+          CONST=$(grep -Po '^VERSION\s*=\s*"\K[^"]+' sven/constants.py)
+          PYPROJ=$(grep -Po '^version\s*=\s*"\K[^"]+' pyproject.toml)
+          echo "tag=$WANT constants.py=$CONST pyproject.toml=$PYPROJ"
+          if [ "$WANT" != "$CONST" ] || [ "$WANT" != "$PYPROJ" ]; then
+            echo "::error::Version mismatch: bump sven/constants.py and pyproject.toml to $WANT before tagging"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: |
+          pip install requests zstandard python-gnupg pytest
+          python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    # Build on an older glibc than ubuntu-latest so the binary runs on more systems.
+    container: python:3.11-bookworm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install build dependencies
+        run: pip install requests zstandard python-gnupg pyinstaller
 
       - name: Build binary
-        run: |
-          make build
+        run: make build
 
-      - name: Rename binary to match install.sh expectation
+      - name: Name the asset the way install.sh and the PKGBUILD expect
         run: |
           mv dist/sven dist/sven-linux-x86_64
+          cd dist && sha256sum sven-linux-x86_64 > SHA256SUMS
+          cat SHA256SUMS
 
-      - name: Generate SHA256
-        run: |
-          sha256sum dist/sven-linux-x86_64 > dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sven-linux-x86_64
+          path: |
+            dist/sven-linux-x86_64
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sven-linux-x86_64
+          path: dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
           generate_release_notes: true
+          prerelease: ${{ contains(env.TAG, '-') }}
           files: |
             dist/sven-linux-x86_64
             dist/SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update AUR PKGBUILD checksums
-        if: ${{ env.AUR_SSH_PRIVATE_KEY != '' }}
+  aur:
+    # Optional: only runs when the AUR_SSH_PRIVATE_KEY secret is configured.
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Check for AUR credentials
+        id: gate
         run: |
-          CSUM=$(awk '{print $1}' dist/SHA256SUMS)
-          sed -i "s/sha256sums=('SKIP')/sha256sums=('${CSUM}')/" PKGBUILD
-          sed -i "s/pkgver=.*/pkgver=${GITHUB_REF_NAME#v}/" PKGBUILD
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else echo "AUR_SSH_PRIVATE_KEY not set; skipping AUR publish"; fi
 
-      - name: Publish AUR Package (sven-bin)
-        if: ${{ env.AUR_SSH_PRIVATE_KEY != '' }}
-        continue-on-error: true
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          name: sven-linux-x86_64
+          path: dist
+
+      - name: Stage PKGBUILD with its local sources and real checksums
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          mkdir aur
+          cp PKGBUILD aur/
+          cp initscripts/*.hook aur/
+          cp scripts/check-sven-lock.sh scripts/check-sven-aur-upgrade.sh scripts/delegate-sven-remove.sh aur/
+          python3 scripts/stage_aur.py "$TAG" dist/SHA256SUMS aur
+          sed -n '1,25p' aur/PKGBUILD
+
+      - name: Publish AUR package (sven-bin)
+        if: steps.gate.outputs.enabled == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: sven-bin
-          pkgbuild: ./PKGBUILD
+          pkgbuild: ./aur/PKGBUILD
+          assets: ./aur/*
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Release ${{ github.ref_name }}"
+          commit_message: "Release ${{ env.TAG }}"
